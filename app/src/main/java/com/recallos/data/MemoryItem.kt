@@ -12,6 +12,7 @@ data class MemoryItem(
     val sourceType: SourceType = SourceType.SCREENSHOT,
     val rawOcrText: String,
     val caption: String? = null,
+    val visualCaption: String? = null,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB)
     val embeddingVector: ByteArray? = null,
     val createdAt: Long = System.currentTimeMillis(),

@@ -60,7 +60,10 @@ class LocalLlmEngine(
         appendLine("Question: $query")
         appendLine("Evidence:")
         results.forEachIndexed { index, item ->
-            appendLine("${index + 1}. [${item.caption.orEmpty()}]: ${item.rawOcrText}")
+            appendLine(
+                "${index + 1}. [${item.caption.orEmpty()}] " +
+                    "Visual: ${item.visualCaption.orEmpty()} OCR: ${item.rawOcrText}"
+            )
         }
         appendLine("Answer concisely, and end with 'Source: [n]' referencing which evidence item supports your answer.")
     }

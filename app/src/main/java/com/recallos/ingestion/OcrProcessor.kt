@@ -22,4 +22,8 @@ class OcrProcessor(
                 .addOnFailureListener { error -> continuation.resumeWithException(error) }
         }
     }
+
+    fun close() {
+        recognizer.close()
+    }
 }

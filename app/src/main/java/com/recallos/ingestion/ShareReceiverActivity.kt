@@ -6,16 +6,14 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class ShareReceiverActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val imageUri = intent.sharedImageUri()
-        if (imageUri == null) {
+        val imageUris = intent.sharedImageUris()
+        if (imageUris.isEmpty()) {
             finish()
             return
         }
@@ -23,12 +21,9 @@ class ShareReceiverActivity : ComponentActivity() {
         lifecycleScope.launch {
             runCatching {
                 val repository = ImageIngestionRepository(applicationContext)
-                val memoryId = repository.saveImageForProcessing(imageUri)
-                CoroutineScope(Dispatchers.IO).launch {
-                    runCatching { repository.processMemoryItem(memoryId) }
-                        .onFailure { error ->
-                            android.util.Log.e("RecallOSShare", "Failed to run OCR", error)
-                        }
+                imageUris.forEach { imageUri ->
+                    val memoryId = repository.saveImageForProcessing(imageUri)
+                    repository.processMemoryItem(memoryId)
                 }
             }.onSuccess {
                 Toast.makeText(applicationContext, "Saved to RecallOS", Toast.LENGTH_SHORT).show()
@@ -45,9 +40,21 @@ class ShareReceiverActivity : ComponentActivity() {
         }
     }
 
-    private fun Intent.sharedImageUri(): Uri? {
-        if (action != Intent.ACTION_SEND) return null
+    private fun Intent.sharedImageUris(): List<Uri> {
+        val uris = buildList {
+            if (action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE) {
+                @Suppress("DEPRECATION")
+                getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let(::add)
+                clipData?.let { clip ->
+                    for (index in 0 until clip.itemCount) {
+                        clip.getItemAt(index).uri?.let(::add)
+                    }
+                }
+            }
+        }
+        if (action != Intent.ACTION_SEND_MULTIPLE) return uris.distinct()
+
         @Suppress("DEPRECATION")
-        return getParcelableExtra(Intent.EXTRA_STREAM)
+        return (getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty() + uris).distinct()
     }
 }

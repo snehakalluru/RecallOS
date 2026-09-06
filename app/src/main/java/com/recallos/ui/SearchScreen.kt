@@ -257,7 +257,20 @@ private fun SearchResultRow(result: SearchResult, resultIndex: Int, citedSource:
             )
         },
         supportingContent = {
-            Text("Similarity ${(result.similarity * 100).coerceAtLeast(0f).formatScore()}%")
+            Text(
+                text = buildString {
+                    append(result.item.visualCaption ?: "No visual description yet")
+                    if (result.item.tags.isNotBlank()) {
+                        append("\nType: ")
+                        append(result.item.tags.replace(',', ' '))
+                    }
+                    append("\nSimilarity ")
+                    append((result.similarity * 100).coerceAtLeast(0f).formatScore())
+                    append('%')
+                },
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
         },
     )
 }

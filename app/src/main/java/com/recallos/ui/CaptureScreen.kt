@@ -61,6 +61,8 @@ fun CaptureScreen() {
     LaunchedEffect(ingestionRepository) {
         runCatching { ingestionRepository.processPendingItems() }
             .onFailure { Log.e("RecallOSIngestion", "Pending processing failed", it) }
+        runCatching { ingestionRepository.classifyExistingItems() }
+            .onFailure { Log.e("RecallOSIngestion", "Existing item classification failed", it) }
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -175,7 +177,11 @@ private fun MemoryItemRow(item: MemoryItem) {
 }
 
 private fun MemoryItem.statusLabel(): String =
-    if (rawOcrText == "PROCESSING") "Reading screenshot..." else "Indexed"
+    when {
+        rawOcrText == "PROCESSING" -> "Reading text..."
+        visualCaption == null -> "Understanding image..."
+        else -> "Indexed"
+    }
 
 private fun formatCreatedAt(createdAt: Long): String =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

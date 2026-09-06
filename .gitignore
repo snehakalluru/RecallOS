@@ -6,6 +6,8 @@ local.properties
 android-sdk/
 gradle-*/
 *.zip
+models/
+gemma-*-GGUF/
 
 *.iml
 .idea/

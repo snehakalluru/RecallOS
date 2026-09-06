@@ -36,9 +36,20 @@ class SearchRepository(
             .sortedByDescending(SearchResult::similarity)
             .take(topK)
 
-        if (semanticResults.isNotEmpty()) return semanticResults
+        val tokenResults = tokenFallback(query, topK)
+        if (tokenResults.isNotEmpty()) return tokenResults
 
-        return keywordFallback(query, topK)
+        val bestSemanticScore = semanticResults.firstOrNull()?.similarity ?: 0f
+        if (bestSemanticScore >= SEMANTIC_MATCH_THRESHOLD) {
+            val secondSemanticScore = semanticResults.getOrNull(1)?.similarity ?: 0f
+            val scoreSpread = bestSemanticScore - secondSemanticScore
+            if (scoreSpread < SEMANTIC_SPREAD_THRESHOLD) return emptyList()
+            val relevanceFloor = maxOf(SEMANTIC_MATCH_THRESHOLD, bestSemanticScore * 0.72f)
+            return semanticResults.filter { it.similarity >= relevanceFloor }
+        }
+
+        return semanticResults.filter { it.similarity >= SEMANTIC_MATCH_THRESHOLD }
+            .ifEmpty { keywordFallback(query, topK) }
             .take(topK)
     }
 
@@ -48,6 +59,47 @@ class SearchRepository(
             .getOrDefault(emptyList())
             .take(topK)
             .map { SearchResult(it, 0f) }
+
+    private suspend fun tokenFallback(query: String, topK: Int): List<SearchResult> {
+        val queryTokens = meaningfulTokens(query)
+        if (queryTokens.isEmpty()) return emptyList()
+
+        return dao.findAll()
+            .mapNotNull { item ->
+                val documentTokens = meaningfulTokens(
+                    buildString {
+                        append(item.rawOcrText)
+                        append(' ')
+                        append(item.caption.orEmpty())
+                        append(' ')
+                        append(item.visualCaption.orEmpty())
+                        append(' ')
+                        append(item.tags)
+                    }
+                )
+                val matches = queryTokens.count(documentTokens::contains)
+                val score = matches.toFloat() / queryTokens.size
+                if (score < TOKEN_MATCH_THRESHOLD) null else SearchResult(item, score)
+            }
+            .sortedByDescending(SearchResult::similarity)
+            .take(topK)
+    }
+
+    private fun meaningfulTokens(text: String): Set<String> =
+        text.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .map { token ->
+                when {
+                    token.endsWith("ies") && token.length > 4 -> token.dropLast(3) + "y"
+                    token.endsWith("ing") && token.length > 5 -> token.dropLast(3)
+                    token.endsWith("ed") && token.length > 4 -> token.dropLast(2)
+                    token.endsWith("es") && token.length > 4 -> token.dropLast(2)
+                    token.endsWith("s") && token.length > 3 -> token.dropLast(1)
+                    else -> token
+                }
+            }
+            .filter { it.length >= 3 && it !in STOP_WORDS }
+            .toSet()
 
     private fun cosineSimilarity(left: FloatArray, right: FloatArray): Float {
         if (left.size != right.size) return 0f
@@ -65,5 +117,12 @@ class SearchRepository(
 
     private companion object {
         const val TAG = "RecallOSSearch"
+        const val SEMANTIC_MATCH_THRESHOLD = 0.25f
+        const val SEMANTIC_SPREAD_THRESHOLD = 0.03f
+        const val TOKEN_MATCH_THRESHOLD = 0.25f
+        val STOP_WORDS = setOf(
+            "the", "and", "for", "find", "show", "with", "that", "this", "from", "about",
+            "screenshot", "having", "image", "picture", "photo",
+        )
     }
 }

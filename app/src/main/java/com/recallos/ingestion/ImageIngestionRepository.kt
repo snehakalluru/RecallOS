@@ -3,12 +3,22 @@ package com.recallos.ingestion
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.recallos.data.MemoryItem
 import com.recallos.data.RecallOsDatabase
+import com.recallos.llm.VisualCaptionEngine
 import com.recallos.search.EmbeddingEngine
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 class ImageIngestionRepository(
@@ -32,10 +42,12 @@ class ImageIngestionRepository(
     suspend fun processMemoryItem(memoryId: Long) = withContext(Dispatchers.IO) {
         val item = dao.findProcessingItems().firstOrNull { it.id == memoryId } ?: return@withContext
         val ocrProcessor = OcrProcessor(context)
+        val visualCaptionEngine = VisualCaptionEngine(context)
         val embeddingEngine = EmbeddingEngine(context)
         try {
-            updateWithOcr(item, ocrProcessor, embeddingEngine)
+            updateWithOcrAndVisual(item, ocrProcessor, visualCaptionEngine, embeddingEngine)
         } finally {
+            ocrProcessor.close()
             embeddingEngine.close()
         }
         Log.i(TAG, "OCR complete for MemoryItem id=$memoryId")
@@ -43,19 +55,45 @@ class ImageIngestionRepository(
 
     suspend fun processPendingItems() = withContext(Dispatchers.IO) {
         val ocrProcessor = OcrProcessor(context)
+        val visualCaptionEngine = VisualCaptionEngine(context)
         val embeddingEngine = EmbeddingEngine(context)
         try {
             dao.findProcessingItems().forEach { item ->
                 runCatching {
-                    updateWithOcr(item, ocrProcessor, embeddingEngine)
+                    updateWithOcrAndVisual(item, ocrProcessor, visualCaptionEngine, embeddingEngine)
                     Log.i(TAG, "OCR complete for pending MemoryItem id=${item.id}")
                 }.onFailure { error ->
                     Log.e(TAG, "Failed to process pending MemoryItem id=${item.id}", error)
                 }
             }
         } finally {
+            ocrProcessor.close()
             embeddingEngine.close()
         }
+    }
+
+    suspend fun classifyExistingItems() = withContext(Dispatchers.IO) {
+        dao.findUnclassified().forEach { item ->
+            dao.updateTags(
+                item.id,
+                ScreenshotClassifier.classify(
+                    "${item.rawOcrText} ${item.visualCaption.orEmpty()}"
+                ),
+            )
+        }
+    }
+
+    fun enqueueProcessing(memoryId: Long) {
+        val request = OneTimeWorkRequestBuilder<MemoryItemProcessingWorker>()
+            .setInputData(Data.Builder().putLong(MemoryItemProcessingWorker.MEMORY_ID, memoryId).build())
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
+                    .build()
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(context).enqueue(request)
     }
 
     suspend fun seedDemoImages(): Int = withContext(Dispatchers.IO) {
@@ -74,15 +112,33 @@ class ImageIngestionRepository(
         demoImages.size
     }
 
-    private suspend fun updateWithOcr(
+    private suspend fun updateWithOcrAndVisual(
         item: MemoryItem,
         ocrProcessor: OcrProcessor,
+        visualCaptionEngine: VisualCaptionEngine,
         embeddingEngine: EmbeddingEngine,
-    ) {
-        val ocrText = ocrProcessor.process(Uri.parse(item.sourceUri))
+    ) = coroutineScope {
+        val imageUri = Uri.parse(item.sourceUri)
+        val ocrTextDeferred = async { ocrProcessor.process(imageUri) }
+        val visualCaptionDeferred = async {
+            runCatching { visualCaptionEngine.caption(imageUri) }
+                .onFailure { error ->
+                    Log.w(TAG, "Visual caption unavailable for MemoryItem id=${item.id}", error)
+                }
+                .getOrNull()
+        }
+        val ocrText = ocrTextDeferred.await()
         val caption = ocrText.trim().split(Regex("\\s+")).take(15).joinToString(" ")
         dao.updateOcrResult(item.id, ocrText, caption)
-        dao.updateEmbedding(item.id, EmbeddingEngine.serialize(embeddingEngine.embed("$ocrText $caption")))
+        dao.updateTags(item.id, ScreenshotClassifier.classify(ocrText))
+
+        val visualCaption = visualCaptionDeferred.await().orEmpty()
+        dao.updateVisualCaption(item.id, visualCaption)
+        dao.updateTags(item.id, ScreenshotClassifier.classify("$ocrText $visualCaption"))
+        dao.updateEmbedding(
+            item.id,
+            EmbeddingEngine.serialize(embeddingEngine.embed("$ocrText $caption ${visualCaption.orEmpty()}")),
+        )
     }
 
     private fun copyToPrivateStorage(sourceUri: Uri): File {
