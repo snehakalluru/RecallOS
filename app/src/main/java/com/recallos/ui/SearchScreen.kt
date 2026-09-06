@@ -10,6 +10,7 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -44,6 +45,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.recallos.data.RecallOsDatabase
 import com.recallos.llm.LocalLlmEngine
 import com.recallos.search.EmbeddingEngine
@@ -67,6 +70,7 @@ fun SearchScreen() {
     var isThinking by remember { mutableStateOf(false) }
     var answer by remember { mutableStateOf<String?>(null) }
     var citedSource by remember { mutableStateOf<Int?>(null) }
+    var previewItem by remember { mutableStateOf<com.recallos.data.MemoryItem?>(null) }
 
     val runSearch: (String) -> Unit = { searchText ->
         scope.launch {
@@ -219,60 +223,110 @@ fun SearchScreen() {
             contentPadding = PaddingValues(bottom = 16.dp),
         ) {
             items(results, key = { it.item.id }) { result ->
-                SearchResultRow(result, resultIndex = results.indexOf(result), citedSource = citedSource)
+                SearchResultRow(
+                    result,
+                    resultIndex = results.indexOf(result),
+                    citedSource = citedSource,
+                    onOpen = { previewItem = result.item },
+                )
                 HorizontalDivider()
+            }
+        }
+    }
+
+    previewItem?.let { item ->
+        Dialog(
+            onDismissRequest = { previewItem = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    Button(onClick = { previewItem = null }) {
+                        Text("Close")
+                    }
+                }
+                val previewBitmap = remember(item.sourceUri) {
+                    BitmapFactory.decodeFile(Uri.parse(item.sourceUri).path)
+                }
+                if (previewBitmap != null) {
+                    Image(
+                        bitmap = previewBitmap.asImageBitmap(),
+                        contentDescription = "Full screenshot",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                    )
+                } else {
+                    Text("Screenshot unavailable")
+                }
             }
         }
     }
 }
 
 @Composable
-private fun SearchResultRow(result: SearchResult, resultIndex: Int, citedSource: Int?) {
+private fun SearchResultRow(
+    result: SearchResult,
+    resultIndex: Int,
+    citedSource: Int?,
+    onOpen: (() -> Unit)? = null,
+) {
     val bitmap = remember(result.item.sourceUri) {
         BitmapFactory.decodeFile(Uri.parse(result.item.sourceUri).path)
     }
-    ListItem(
-        colors = ListItemDefaults.colors(
-            containerColor = if (citedSource == resultIndex + 1) {
-                MaterialTheme.colorScheme.tertiaryContainer
-            } else {
-                MaterialTheme.colorScheme.surface
-            },
-        ),
-        leadingContent = {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Screenshot",
-                    modifier = Modifier.size(72.dp),
-                )
-            }
-        },
-        headlineContent = {
-            Text(
-                text = result.item.caption?.ifBlank { "Untitled screenshot" }
-                    ?: "Untitled screenshot",
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-        supportingContent = {
-            Text(
-                text = buildString {
-                    append(result.item.visualCaption ?: "No visual description yet")
-                    if (result.item.tags.isNotBlank()) {
-                        append("\nType: ")
-                        append(result.item.tags.replace(',', ' '))
-                    }
-                    append("\nSimilarity ")
-                    append((result.similarity * 100).coerceAtLeast(0f).formatScore())
-                    append('%')
+    Modifier.clickable(onClick = { onOpen?.invoke() }).let { clickModifier ->
+        ListItem(
+            modifier = clickModifier,
+            colors = ListItemDefaults.colors(
+                containerColor = if (citedSource == resultIndex + 1) {
+                    MaterialTheme.colorScheme.tertiaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surface
                 },
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-    )
+            ),
+            leadingContent = {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Open screenshot",
+                        modifier = Modifier.size(72.dp),
+                    )
+                }
+            },
+            headlineContent = {
+                Text(
+                    text = result.item.caption?.ifBlank { "Untitled screenshot" }
+                        ?: "Untitled screenshot",
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            supportingContent = {
+                Text(
+                    text = buildString {
+                        append(result.item.visualCaption ?: "No visual description yet")
+                        if (result.item.tags.isNotBlank()) {
+                            append("\nType: ")
+                            append(result.item.tags.replace(',', ' '))
+                        }
+                        append("\nSimilarity ")
+                        append((result.similarity * 100).coerceAtLeast(0f).formatScore())
+                        append("\nTap to open")
+                    },
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+        )
+    }
 }
 
 private fun Float.formatScore(): String = "%.1f".format(this)
